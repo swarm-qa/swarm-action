@@ -1,0 +1,82 @@
+name: 'Swarm Test'
+description: 'AI-powered testing for web and mobile apps'
+
+inputs:
+  url:
+    description: 'URL to test (web only, e.g., http://localhost:3000)'
+    required: false
+  goals-file:
+    description: 'Path to test definitions YAML'
+    default: '.swarm/tests.yaml'
+  app-id:
+    description: 'App identifier'
+    required: true
+  platform:
+    description: 'web or ios'
+    default: 'web'
+  max-steps:
+    description: 'Max exploration steps per test'
+    default: '30'
+  timeout:
+    description: 'Timeout per test in seconds'
+    default: '300'
+  swarm-version:
+    description: 'Swarm version to use (tag)'
+    default: 'latest'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download Swarm binary
+      shell: bash
+      env:
+        GH_TOKEN: ${{ env.SWARM_TOKEN }}
+      run: |
+        BINARY="swarm-linux-x64"
+        if [ "$RUNNER_OS" = "macOS" ]; then BINARY="swarm-macos-arm64"; fi
+
+        VERSION="${{ inputs.swarm-version }}"
+        if [ "$VERSION" = "latest" ]; then
+          gh release download --repo swarm-qa/swarm --pattern "$BINARY" --dir /tmp/swarm
+        else
+          gh release download "$VERSION" --repo swarm-qa/swarm --pattern "$BINARY" --dir /tmp/swarm
+        fi
+        chmod +x /tmp/swarm/$BINARY
+        sudo mv /tmp/swarm/$BINARY /usr/local/bin/swarm
+
+    - name: Install Playwright (web)
+      if: inputs.platform == 'web'
+      shell: bash
+      run: pip install playwright && playwright install chromium
+
+    - name: Install iOS deps
+      if: inputs.platform == 'ios'
+      shell: bash
+      run: |
+        npm install -g detox-cli
+        brew tap wix/brew && HOMEBREW_NO_AUTO_UPDATE=1 brew install applesimutils
+
+    - name: Run Swarm
+      shell: bash
+      env:
+        GOOGLE_API_KEY: ${{ env.GOOGLE_API_KEY }}
+        SWARM_WEB_URL: ${{ inputs.url }}
+      run: |
+        mkdir -p swarm-results
+        swarm explore \
+          --platform "${{ inputs.platform }}" \
+          --app "${{ inputs.app-id }}" \
+          --goals-file "${{ inputs.goals-file }}" \
+          --max-steps ${{ inputs.max-steps }} \
+          --timeout ${{ inputs.timeout }} \
+          --output-json \
+          --run-root swarm-results/runs \
+          > swarm-results/result.json 2> swarm-results/explore.log || true
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: swarm-results
+        path: swarm-results/
+        retention-days: 14
